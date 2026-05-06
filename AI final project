@@ -1,0 +1,232 @@
+import tkinter as tk
+from tkinter import ttk, scrolledtext
+import itertools, threading
+from collections import deque
+
+# --- Constants & Configuration ---
+DEPTH, ROUNDS, INITIAL_QUEUE, CLEAR_RATE, NUM_INT = 4, 10, 6, 3, 4
+ACTIONS = list(itertools.product([0, 1], repeat=NUM_INT))
+DIR = {0: "NS", 1: "EW"}
+
+class TrafficAI:
+    def __init__(self):
+        self.nodes = {'mm': 0, 'ab': 0} 
+
+    # =====================================================================
+    # 1. BREADTH-FIRST SEARCH (BFS)
+    # =====================================================================
+    def bfs_search(self, queues, tp, target_depth):
+        queue = deque([(queues, tp, 0, None)])
+        best_tp, best_act, nodes = -1, ACTIONS[0], 0
+        
+        while queue:
+            cur_q, cur_tp, d, first = queue.popleft() #current queue , current Throughput , Depth
+            nodes += 1
+            if d == target_depth:
+                if cur_tp > best_tp: best_tp, best_act = cur_tp, first #current Throughput > best Throughput : best action = current Throughput 
+                continue
+            for act in ACTIONS:
+                nq, ntp = self.apply_max(cur_q, cur_tp, act) # nq = New Queues , ntp = new Throughput
+                queue.append((self.apply_min(nq, (0,)*NUM_INT), ntp, d + 1, act if first is None else first))
+        return best_tp, best_act, nodes
+
+    # =====================================================================
+    # 2. DEPTH-FIRST SEARCH (DFS)
+    # =====================================================================
+    def dfs_search(self, queues, tp, target_depth):
+        stack = [(queues, tp, 0, None)]
+        best_tp, best_act, nodes = -1, ACTIONS[0], 0
+        
+        while stack:
+            cur_q, cur_tp, d, first = stack.pop() 
+            nodes += 1
+            if d == target_depth:
+                if cur_tp > best_tp: best_tp, best_act = cur_tp, first
+                continue
+            for act in ACTIONS:
+                nq, ntp = self.apply_max(cur_q, cur_tp, act)
+                stack.append((self.apply_min(nq, (0,)*NUM_INT), ntp, d + 1, act if first is None else first))
+        return best_tp, best_act, nodes
+
+    # =====================================================================
+    # MINIMAX & ALPHA-BETA
+    # =====================================================================
+    def minimax(self, queues, tp, depth, is_max):
+        self.nodes['mm'] += 1
+        if depth == 0: return tp, None
+        best_val = -float('inf') if is_max else float('inf')
+        best_act = ACTIONS[0]
+        for act in ACTIONS:
+            if is_max:
+                nq, ntp = self.apply_max(queues, tp, act)
+                val, _ = self.minimax(nq, ntp, depth - 1, False)
+            else:
+                val, _ = self.minimax(self.apply_min(queues, act), tp, depth - 1, True)
+            if (is_max and val > best_val) or (not is_max and val < best_val):
+                best_val, best_act = val, act
+        return best_val, best_act
+
+    def alphabeta(self, queues, tp, depth, alpha, beta, is_max):
+        self.nodes['ab'] += 1
+        if depth == 0: return tp, None
+        best_val = -float('inf') if is_max else float('inf')
+        best_act = ACTIONS[0]
+        for act in ACTIONS:
+            if is_max:
+                nq, ntp = self.apply_max(queues, tp, act)
+                val, _ = self.alphabeta(nq, ntp, depth - 1, alpha, beta, False)
+                if val > best_val: best_val, best_act = val, act
+                alpha = max(alpha, best_val)
+            else:
+                val, _ = self.alphabeta(self.apply_min(queues, act), tp, depth - 1, alpha, beta, True)
+                if val < best_val: best_val, best_act = val, act
+                beta = min(beta, best_val)
+            if beta <= alpha: break
+        return best_val, best_act
+
+    @staticmethod
+    def apply_max(queues, tp, act):
+        q, cleared = list(queues), 0
+        for i, a in enumerate(act):
+            idx = i * 2 + a
+            c = min(CLEAR_RATE, q[idx])
+            q[idx] -= c
+            cleared += c
+        return tuple(q), tp + cleared
+
+    @staticmethod
+    def apply_min(queues, act):
+        q = list(queues)
+        for i, a in enumerate(act): q[i*2+a] += 1
+        return tuple(q)
+
+
+# =====================================================================
+# GUI APPLICATION LOGIC
+# =====================================================================
+class SmartTrafficApp:
+    def __init__(self, root):
+        self.root, self.round, self.throughput = root, 1, 0
+        self.queues = tuple([INITIAL_QUEUE] * (NUM_INT * 2))
+        
+        # --- ADDED: self.auto_play tracker ---
+        self.ai, self.is_running, self.auto_play, self.current_action = TrafficAI(), False, False, None
+        
+        self.root.title("Smart Traffic Controller [Simplified]")
+        self.root.geometry("1100x700")
+        self.root.configure(bg="#1e1e2e")
+        self.coords = [(150, 150), (450, 150), (150, 450), (450, 450)]
+        self.build_ui()
+        self.draw_environment()
+
+    def build_ui(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+        
+        left = tk.Frame(self.root, bg="#1e1e2e", width=600)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.canvas = tk.Canvas(left, width=600, height=600, bg="#282a36", highlightthickness=0)
+        self.canvas.pack(pady=30)
+
+        right = tk.Frame(self.root, bg="#1e1e2e", width=450)
+        right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=20, pady=30)
+
+        self.lbl_round = tk.Label(right, text=f"🚦 Round {self.round} / {ROUNDS}", font=("Arial", 18, "bold"), bg="#1e1e2e", fg="#fff")
+        self.lbl_round.pack(pady=(0, 20))
+
+        btn_f = tk.Frame(right, bg="#1e1e2e")
+        btn_f.pack(fill=tk.X)
+        self.btn_next = ttk.Button(btn_f, text="Next Round ▶", command=self.run_round)
+        self.btn_next.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+
+        # --- ADDED: Auto-Play Button ---
+        self.btn_auto = ttk.Button(btn_f, text="Auto-Play ⏯", command=self.toggle_auto)
+        self.btn_auto.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+
+        self.log_area = scrolledtext.ScrolledText(right, height=10, font=("Consolas", 10), bg="#282a36", fg="#50fa7b")
+        self.log_area.pack(fill=tk.BOTH, pady=15)
+        self.log("✅ Initialized Minimal Engine.")
+
+        cols = ("Round", "TP", "MM Nodes", "AB Nodes", "Prune %")
+        self.tree = ttk.Treeview(right, columns=cols, show="headings", height=10)
+        for c in cols: 
+            self.tree.heading(c, text=c)
+            self.tree.column(c, width=80, anchor=tk.CENTER)
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+    def log(self, msg):
+        self.log_area.insert(tk.END, msg + "\n")
+        self.log_area.see(tk.END)
+
+    # --- ADDED: Toggle function to switch state and trigger loop ---
+    def toggle_auto(self):
+        self.auto_play = not self.auto_play
+        self.btn_auto.config(text="Stop Auto ⏹" if self.auto_play else "Auto-Play ⏯")
+        if self.auto_play: self.run_round()
+
+    def run_round(self):
+        if self.round <= ROUNDS and not self.is_running:
+            self.is_running = True
+            self.btn_next.state(['disabled'])
+            self.log(f"🧠 Computing Round {self.round}...")
+            threading.Thread(target=self.compute, daemon=True).start()
+
+    def compute(self):
+        _, _, bfs = self.ai.bfs_search(self.queues, self.throughput, DEPTH)
+        _, _, dfs = self.ai.dfs_search(self.queues, self.throughput, DEPTH)
+        
+        self.ai.nodes = {'mm': 0, 'ab': 0}
+        self.ai.minimax(self.queues, self.throughput, DEPTH, True)
+        _, act = self.ai.alphabeta(self.queues, self.throughput, DEPTH, -float('inf'), float('inf'), True)
+        
+        next_q, next_tp = self.ai.apply_max(self.queues, self.throughput, act)
+        _, min_act = self.ai.alphabeta(next_q, next_tp, DEPTH - 1, -float('inf'), float('inf'), False)
+        
+        self.root.after(0, self.apply_res, act, self.ai.apply_min(next_q, min_act), next_tp, bfs, dfs)
+
+    def apply_res(self, act, fin_q, next_tp, bfs, dfs):
+        eff = (1 - (self.ai.nodes['ab'] / max(1, self.ai.nodes['mm']))) * 100
+        self.queues, self.throughput, self.current_action = fin_q, next_tp, act
+
+        self.log(f"🚥 P1 Chose : {', '.join(DIR[d] for d in act)}")
+        self.log(f"🔍 BFS/DFS  : {bfs} / {dfs} nodes scanned")
+        self.log(f"✂️ Pruned   : {eff:.1f}% reduction!\n" + "-"*35)
+
+        self.tree.insert("", "end", values=(self.round, self.throughput, self.ai.nodes['mm'], self.ai.nodes['ab'], f"{eff:.1f}%"))
+        self.draw_environment()
+
+        self.round += 1
+        self.lbl_round.config(text=f"🚦 Round {min(self.round, ROUNDS)} / {ROUNDS}")
+        self.is_running = False
+        
+        # --- ADDED: Loop trigger if autoplay is ON, or disable if simulation ends ---
+        if self.round <= ROUNDS:
+            self.btn_next.state(['!disabled'])
+            if self.auto_play: self.root.after(800, self.run_round) # 800ms delay to watch animation
+        else:
+            self.btn_auto.state(['disabled'])
+
+    def draw_environment(self):
+        self.canvas.delete("all")
+        for i, (cx, cy) in enumerate(self.coords):
+            self.canvas.create_rectangle(cx-20, cy-120, cx+20, cy+120, fill="#44475a", outline="")
+            self.canvas.create_rectangle(cx-120, cy-20, cx+120, cy+20, fill="#44475a", outline="")
+            self.canvas.create_rectangle(cx-20, cy-20, cx+20, cy+20, fill="#6272a4", outline="")
+            self.canvas.create_text(cx, cy, text=f"I-{i+1}", fill="white", font=("Arial", 10, "bold"))
+
+            q_ns, q_ew = self.queues[i*2], self.queues[i*2+1]
+            act = self.current_action[i] if self.current_action else None
+            
+            self.canvas.create_oval(cx-8, cy-40, cx+8, cy-24, fill="#50fa7b" if act == 0 else "#ff5555")
+            self.canvas.create_oval(cx-40, cy-8, cx-24, cy+8, fill="#50fa7b" if act == 1 else "#ff5555")
+
+            for c in range(min(q_ns, 6)): self.canvas.create_rectangle(cx-6, cy-45-c*12-10, cx+6, cy-45-c*12, fill="#8be9fd")
+            for c in range(min(q_ew, 6)): self.canvas.create_rectangle(cx-45-c*12-10, cy-6, cx-45-c*12, cy+6, fill="#ffb86c")
+            
+            self.canvas.create_text(cx+35, cy-50, text=f"Q:{q_ns}", fill="#8be9fd", font=("Arial", 10, "bold"))
+            self.canvas.create_text(cx-45, cy+35, text=f"Q:{q_ew}", fill="#ffb86c", font=("Arial", 10, "bold"))
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SmartTrafficApp(root)
+    root.mainloop()
